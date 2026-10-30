@@ -55,7 +55,7 @@ def main():
             destination = source / name
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / name, destination)
-        for module in ("account-service", "transaction-service"):
+        for module in ("account-service", "transaction-service", "discovery-service", "config-service", "gateway-service"):
             (source / module).mkdir()
             shutil.copy2(ROOT / module / "pom.xml", source / module / "pom.xml")
             shutil.copytree(ROOT / module / "src", source / module / "src")
