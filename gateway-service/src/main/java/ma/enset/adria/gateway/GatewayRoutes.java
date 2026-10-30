@@ -15,10 +15,15 @@ public class GatewayRoutes {
         return routes.routes()
             .route("account-rest", r -> r.path("/api/accounts", "/api/accounts/**").uri(accounts))
             .route("transaction-rest", r -> r.path("/api/transactions", "/api/transactions/**", "/api/transfers", "/api/transfers/**").uri(transactions))
-            .route("account-protocols", r -> r.path("/accounts/graphql", "/accounts/mcp")
+            .route("account-graphql", r -> r.path("/accounts/graphql")
                 .filters(f -> f.stripPrefix(1)).uri(accounts))
-            .route("transaction-protocols", r -> r.path("/transactions/graphql", "/transactions/mcp")
+            .route("transaction-graphql", r -> r.path("/transactions/graphql")
                 .filters(f -> f.stripPrefix(1)).uri(transactions))
+            // Les connexions MCP peuvent rester ouvertes en SSE ; ne pas leur appliquer le timeout de réponse REST.
+            .route("account-mcp", r -> r.path("/accounts/mcp").filters(f -> f.stripPrefix(1))
+                .metadata("response-timeout", -1).uri(accounts))
+            .route("transaction-mcp", r -> r.path("/transactions/mcp").filters(f -> f.stripPrefix(1))
+                .metadata("response-timeout", -1).uri(transactions))
             .build();
     }
 }

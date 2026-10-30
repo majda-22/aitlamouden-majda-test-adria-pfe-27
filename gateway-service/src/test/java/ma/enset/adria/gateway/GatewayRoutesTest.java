@@ -12,7 +12,8 @@ import java.util.*;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import static org.assertj.core.api.Assertions.*;
 
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+    properties = "spring.cloud.gateway.server.webflux.httpclient.response-timeout=1s")
 class GatewayRoutesTest {
     static final ConcurrentLinkedQueue<String> REQUESTS=new ConcurrentLinkedQueue<>();
     static final HttpServer ACCOUNT=server("account");
@@ -23,6 +24,10 @@ class GatewayRoutesTest {
             var server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
             server.createContext("/",exchange -> {
                 REQUESTS.add(name+":"+exchange.getRequestMethod()+":"+exchange.getRequestURI().getPath());
+                if ("slow=true".equals(exchange.getRequestURI().getQuery())) {
+                    try { Thread.sleep(1500); }
+                    catch (InterruptedException error) { Thread.currentThread().interrupt(); }
+                }
                 String status=exchange.getRequestURI().getPath().equals("/api/transactions/pending")?"PENDING":"UP";
                 byte[] bytes=("{\"service\":\""+name+"\",\"path\":\""+exchange.getRequestURI().getPath()+"\",\"status\":\""+status+"\"}").getBytes();
                 exchange.getResponseHeaders().add("Content-Type","application/json");
@@ -67,6 +72,11 @@ class GatewayRoutesTest {
         var result=request("GET","/api/transactions/pending");
         assertThat(result.body()).contains("PENDING").doesNotContain("COMPLETED");
         assertThat(REQUESTS).hasSize(1);
+    }
+    @Test void mcpConnectionCanWaitBeyondTheRestResponseTimeout() throws Exception {
+        var result=request("GET","/accounts/mcp?slow=true");
+        assertThat(result.statusCode()).isEqualTo(200);
+        assertThat(REQUESTS).containsExactly("account:GET:/mcp");
     }
     @Test void upstreamServerFailureReturnsErrorWithoutRetryOrSuccessBody() throws Exception {
         var result=request("GET","/api/accounts/unavailable");
