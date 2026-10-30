@@ -3,6 +3,8 @@ package ma.enset.adria.account.domain;
 import jakarta.persistence.*;
 import ma.enset.adria.account.service.dto.DebitRequest;
 import ma.enset.adria.account.service.dto.DebitResponse;
+import ma.enset.adria.account.service.dto.TransferRequest;
+import ma.enset.adria.account.service.dto.TransferResponse;
 import java.math.BigDecimal;
 import java.util.UUID;
 
@@ -21,6 +23,9 @@ public class DebitOperation implements org.springframework.data.domain.Persistab
     @Column(precision = 38, scale = 18)
     private BigDecimal balanceAfter;
     private String rejectionCode;
+    private UUID destinationAccountId;
+    @Column(precision = 38, scale = 18)
+    private BigDecimal destinationBalanceAfter;
 
     protected DebitOperation() { }
 
@@ -39,7 +44,7 @@ public class DebitOperation implements org.springframework.data.domain.Persistab
     }
 
     public boolean matches(DebitRequest request) {
-        return accountId.equals(request.accountId()) && amount.compareTo(request.amount()) == 0
+        return destinationAccountId == null && accountId.equals(request.accountId()) && amount.compareTo(request.amount()) == 0
                 && currency.equals(request.currency());
     }
 
@@ -51,5 +56,29 @@ public class DebitOperation implements org.springframework.data.domain.Persistab
 
     public DebitResponse response() {
         return new DebitResponse(operationId, accountId, amount, currency, status, balanceAfter, rejectionCode);
+    }
+
+    public DebitOperation(TransferRequest request) {
+        operationId = request.operationId();
+        accountId = request.sourceAccountId();
+        destinationAccountId = request.destinationAccountId();
+        amount = request.amount();
+        currency = request.currency();
+    }
+
+    public boolean matches(TransferRequest request) {
+        return accountId.equals(request.sourceAccountId())
+                && java.util.Objects.equals(destinationAccountId, request.destinationAccountId())
+                && amount.compareTo(request.amount()) == 0 && currency.equals(request.currency());
+    }
+
+    public void finishTransfer(BigDecimal sourceBalance, BigDecimal destinationBalance, String rejection) {
+        finish(sourceBalance, rejection);
+        destinationBalanceAfter = destinationBalance;
+    }
+
+    public TransferResponse transferResponse() {
+        return new TransferResponse(operationId, accountId, destinationAccountId, amount, currency,
+                status, balanceAfter, destinationBalanceAfter, rejectionCode);
     }
 }

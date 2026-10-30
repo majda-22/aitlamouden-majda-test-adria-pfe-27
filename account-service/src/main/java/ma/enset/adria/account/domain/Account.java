@@ -70,4 +70,8 @@ public class Account {
     public void debit(BigDecimal amount) {
         balance = balance.subtract(amount);
     }
+
+    public void credit(BigDecimal amount) {
+        balance = balance.add(amount);
+    }
 }
