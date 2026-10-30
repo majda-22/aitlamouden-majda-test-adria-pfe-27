@@ -124,4 +124,17 @@ class DebitTest {
         mvc.perform(post("/internal/debits").contentType("application/json").content(body.replace("\"amount\":250", "\"amount\":0")))
                 .andExpect(status().isBadRequest());
     }
+
+    @Test void replayUsesStoredOutcomeBeforeChangedBalanceAndBlockedStatus() {
+        var id = account("1500");
+        var original = request(UUID.randomUUID(), id, "1000");
+        debits.debit(original);
+        debits.debit(request(UUID.randomUUID(), id, "400"));
+        accounts.changeStatus(id, new ChangeAccountStatusRequest(AccountStatus.BLOCKED));
+        var replay = debits.debit(original);
+        assertThat(replay.status()).isEqualTo("COMPLETED");
+        assertThat(replay.balanceAfter()).isEqualByComparingTo("500");
+        assertThat(accounts.get(id).balance()).isEqualByComparingTo("100");
+        assertThat(accounts.get(id).status()).isEqualTo(AccountStatus.BLOCKED);
+    }
 }

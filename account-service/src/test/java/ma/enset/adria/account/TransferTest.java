@@ -145,4 +145,18 @@ class TransferTest {
                 .content(body.replace("\"amount\":250", "\"amount\":" + amount))).andExpect(status().isBadRequest());
         balances(source, "1250", destination, "450");
     }
+
+    @Test void replayUsesStoredTransferBeforeChangedBalancesAndBlockedAccounts() {
+        var source = account("1500", "MAD"); var destination = account("200", "MAD");
+        var original = request(source, destination, "1000");
+        transfers.transfer(original);
+        debits.debit(new DebitRequest(UUID.randomUUID(), source, new BigDecimal("400"), "MAD"));
+        accounts.changeStatus(source, new ChangeAccountStatusRequest(AccountStatus.BLOCKED));
+        accounts.changeStatus(destination, new ChangeAccountStatusRequest(AccountStatus.BLOCKED));
+        var replay = transfers.transfer(original);
+        assertThat(replay.status()).isEqualTo("COMPLETED");
+        assertThat(replay.sourceBalanceAfter()).isEqualByComparingTo("500");
+        assertThat(replay.destinationBalanceAfter()).isEqualByComparingTo("1200");
+        balances(source, "100", destination, "1200");
+    }
 }
