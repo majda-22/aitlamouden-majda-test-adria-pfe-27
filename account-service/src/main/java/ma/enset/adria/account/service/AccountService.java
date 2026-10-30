@@ -49,7 +49,7 @@ public class AccountService {
 
     @Transactional
     public AccountResponse changeStatus(@NotNull UUID id, @NotNull @Valid ChangeAccountStatusRequest request) {
-        Account account = findAccount(id);
+        Account account = repository.findLockedById(id).orElseThrow(() -> new AccountNotFoundException(id));
         account.changeStatus(request.status());
         return toResponse(account);
     }

@@ -1,91 +1,88 @@
 package ma.enset.adria.transaction;
 
 import com.sun.net.httpserver.HttpServer;
-
+import tools.jackson.databind.json.JsonMapper;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
-import java.util.List;
-import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.math.BigDecimal;
+import java.util.*;
+import java.util.concurrent.*;
 
 final class AccountStub implements AutoCloseable {
-
     record Request(String method, String path) { }
-
-    private record Reply(int status, String accountStatus, String currency, String balance,
-                         long delayMillis, String rawBody) { }
-
+    private record Outcome(int code, String body) { }
+    private record Reply(int httpStatus, String status, String currency, long delay, String raw) { }
     private final HttpServer server;
     private final ExecutorService executor = Executors.newCachedThreadPool();
     private final ConcurrentLinkedQueue<Request> requests = new ConcurrentLinkedQueue<>();
+    private final Map<String, Outcome> operations = new HashMap<>();
+    private final JsonMapper json = JsonMapper.builder().build();
     private volatile Reply reply;
+    private BigDecimal balance;
 
     AccountStub() {
-        try {
-            server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        } catch (IOException exception) {
-            throw new IllegalStateException("Impossible de démarrer le serveur HTTP de test", exception);
-        }
+        try { server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0); }
+        catch (IOException e) { throw new IllegalStateException(e); }
         reset();
         server.setExecutor(executor);
-        server.createContext("/api/accounts/", exchange -> {
+        server.createContext("/internal/debits", exchange -> {
             Reply current = reply;
             requests.add(new Request(exchange.getRequestMethod(), exchange.getRequestURI().getPath()));
             try {
-                if (current.delayMillis() > 0) {
-                    Thread.sleep(current.delayMillis());
-                }
-                String path = exchange.getRequestURI().getPath();
-                String id = path.substring(path.lastIndexOf('/') + 1);
-                String body = current.rawBody() != null ? current.rawBody() :
-                        "{\"id\":\"" + id + "\",\"customerReference\":\"CLIENT-STUB\",\"status\":\""
-                                + current.accountStatus() + "\",\"currency\":\"" + current.currency()
-                                + "\",\"balance\":" + current.balance() + "}";
-                byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+                String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+                Outcome result = outcome(body, current);
+                // Débit committé avant l'attente : reproduit une réponse perdue après succès.
+                if (current.delay() > 0) Thread.sleep(current.delay());
+                byte[] bytes = result.body().getBytes(StandardCharsets.UTF_8);
                 exchange.getResponseHeaders().set("Content-Type", "application/json");
-                exchange.sendResponseHeaders(current.status(), bytes.length);
+                exchange.sendResponseHeaders(result.code(), bytes.length);
                 exchange.getResponseBody().write(bytes);
-            } catch (InterruptedException exception) {
-                Thread.currentThread().interrupt();
-            } catch (IOException ignored) {
-                // Le client peut fermer la connexion lors du test de timeout.
-            } finally {
-                exchange.close();
-            }
+            } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            catch (IOException ignored) { /* Timeout du client. */ }
+            finally { exchange.close(); }
         });
         server.start();
     }
 
-    String url() {
-        return "http://127.0.0.1:" + server.getAddress().getPort();
+    private synchronized Outcome outcome(String body, Reply current) {
+        var data = json.readTree(body);
+        String op = data.path("operationId").asText();
+        if (current.raw() != null) return new Outcome(200, current.raw());
+        if (current.httpStatus() >= 500) return new Outcome(current.httpStatus(), "{}");
+        if (operations.containsKey(op)) return operations.get(op);
+        BigDecimal amount = new BigDecimal(data.path("amount").asText());
+        String refusal = current.httpStatus() == 404 ? "ACCOUNT_NOT_FOUND" :
+                !"ACTIVE".equals(current.status()) ? "ACCOUNT_BLOCKED" :
+                !current.currency().equals(data.path("currency").asText()) ? "CURRENCY_MISMATCH" :
+                balance.compareTo(amount) < 0 ? "INSUFFICIENT_BALANCE" : null;
+        Outcome result;
+        if (refusal != null) result = new Outcome(refusal.equals("ACCOUNT_NOT_FOUND") ? 404 : 400,
+                "{\"operationId\":\"" + op + "\",\"code\":\"" + refusal + "\"}");
+        else {
+            balance = balance.subtract(amount);
+            result = new Outcome(200, "{\"operationId\":\"" + op + "\",\"accountId\":\""
+                    + data.path("accountId").asText() + "\",\"amount\":" + amount + ",\"currency\":\""
+                    + data.path("currency").asText() + "\",\"status\":\"COMPLETED\",\"balanceAfter\":"
+                    + balance + ",\"rejectionCode\":null}");
+        }
+        operations.put(op, result);
+        return result;
     }
 
-    void reset() {
-        reply = new Reply(200, "ACTIVE", "MAD", "2000.00", 0, null);
-        requests.clear();
+    String url() { return "http://127.0.0.1:" + server.getAddress().getPort(); }
+    synchronized void reset() {
+        reply = new Reply(200, "ACTIVE", "MAD", 0, null);
+        balance = new BigDecimal("2000"); operations.clear(); requests.clear();
     }
-
-    void respond(int httpStatus, String status, String currency, String balance) {
-        reply = new Reply(httpStatus, status, currency, balance, 0, null);
+    synchronized void respond(int httpStatus, String status, String currency, String balance) {
+        this.balance = new BigDecimal(balance); reply = new Reply(httpStatus, status, currency, 0, null);
     }
-
-    void delay(long millis) {
-        reply = new Reply(200, "ACTIVE", "MAD", "2000.00", millis, null);
-    }
-
-    void rawResponse(String body) {
-        reply = new Reply(200, "ACTIVE", "MAD", "2000.00", 0, body);
-    }
-
-    List<Request> requests() {
-        return List.copyOf(requests);
-    }
-
-    @Override
-    public void close() {
-        server.stop(0);
-        executor.shutdownNow();
-    }
+    void delay(long millis) { reply = new Reply(200, "ACTIVE", "MAD", millis, null); }
+    void available() { reply = new Reply(200, "ACTIVE", "MAD", 0, null); }
+    void rawResponse(String body) { reply = new Reply(200, "ACTIVE", "MAD", 0, body); }
+    List<Request> requests() { return List.copyOf(requests); }
+    synchronized BigDecimal balance() { return balance; }
+    synchronized int operationCount() { return operations.size(); }
+    @Override public void close() { server.stop(0); executor.shutdownNow(); }
 }

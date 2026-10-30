@@ -32,6 +32,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest(properties = {
         "spring.datasource.url=jdbc:h2:mem:transactions-api-test;DB_CLOSE_DELAY=-1",
         "spring.jpa.hibernate.ddl-auto=create-drop",
+        "bank.transaction.recovery.enabled=false",
         "spring.cloud.openfeign.client.config.account-service.readTimeout=200"
 })
 @AutoConfigureMockMvc
@@ -66,7 +67,7 @@ class TransactionApiTest {
     }
 
     @Test
-    void createsAndRetrievesTransactionAfterOneReadOnlyAccountConsultation() throws Exception {
+    void createsAndRetrievesCompletedTransactionAfterDebit() throws Exception {
         Instant before = Instant.now();
         String id = create(ACCOUNT_ID, "250.123456789");
         var transaction = repository.findById(UUID.fromString(id)).orElseThrow();
@@ -80,7 +81,7 @@ class TransactionApiTest {
                 .andExpect(jsonPath("$.merchantCategory").value("GROCERIES"))
                 .andExpect(jsonPath("$.country").value("MA"));
         assertThat(ACCOUNT_SERVER.requests()).containsExactly(
-                new AccountStub.Request("GET", "/api/accounts/" + ACCOUNT_ID));
+                new AccountStub.Request("POST", "/internal/debits"));
     }
 
     @ParameterizedTest
@@ -131,7 +132,7 @@ class TransactionApiTest {
 
     @Test
     void validatesDirectServiceCalls() {
-        assertThatThrownBy(() -> service.create(new CreateTransactionRequest(ACCOUNT_ID, BigDecimal.ZERO,
+        assertThatThrownBy(() -> service.create(UUID.randomUUID().toString(), new CreateTransactionRequest(ACCOUNT_ID, BigDecimal.ZERO,
                 "MAD", "SHOP", "MA"))).isInstanceOf(ConstraintViolationException.class);
         assertThat(repository.count()).isZero();
         assertThat(ACCOUNT_SERVER.requests()).isEmpty();
@@ -176,15 +177,15 @@ class TransactionApiTest {
 
     @ParameterizedTest
     @ValueSource(ints = {500, 503})
-    void translatesAccountServiceFailuresTo503(int status) throws Exception {
+    void keepsPendingOnAccountServiceFailures(int status) throws Exception {
         ACCOUNT_SERVER.respond(status, "ACTIVE", "MAD", "2000");
-        reject("250", 503, "ACCOUNT_SERVICE_UNAVAILABLE");
+        pending("250");
     }
 
     @Test
-    void returns503WhenFeignReadTimeoutExpires() throws Exception {
+    void keepsPendingWhenDebitResponseTimesOut() throws Exception {
         ACCOUNT_SERVER.delay(1200);
-        reject("250", 503, "ACCOUNT_SERVICE_UNAVAILABLE");
+        pending("250");
         assertThat(ACCOUNT_SERVER.requests()).hasSize(1);
     }
 
@@ -192,7 +193,7 @@ class TransactionApiTest {
     @ValueSource(strings = {"{}", "not-json", "{\"id\":\"not-a-uuid\"}"})
     void rejectsInvalidAccountServiceResponsesWithoutInventingAnAccount(String response) throws Exception {
         ACCOUNT_SERVER.rawResponse(response);
-        reject("250", 503, "ACCOUNT_SERVICE_UNAVAILABLE");
+        pending("250");
     }
 
     @Test
@@ -236,7 +237,7 @@ class TransactionApiTest {
     }
 
     private ResultActions submit(String body) throws Exception {
-        return mvc.perform(post("/api/transactions").contentType(MediaType.APPLICATION_JSON).content(body));
+        return mvc.perform(post("/api/transactions").header("Idempotency-Key", UUID.randomUUID().toString()).contentType(MediaType.APPLICATION_JSON).content(body));
     }
 
     private void reject(String amount, int status, String code) throws Exception {
@@ -244,7 +245,18 @@ class TransactionApiTest {
                 .andExpect(status().is(status))
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
                 .andExpect(jsonPath("$.code").value(code));
-        assertThat(repository.count()).isZero();
+        if (code.equals("MAX_AMOUNT_EXCEEDED")) assertThat(repository.count()).isZero();
+        else {
+            assertThat(repository.count()).isEqualTo(1);
+            assertThat(repository.findAll().get(0).getStatus().name()).isEqualTo("REJECTED");
+        }
+    }
+
+    private void pending(String amount) throws Exception {
+        submit(body(ACCOUNT_ID, amount, "MAD")).andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.status").value("PENDING"));
+        assertThat(repository.count()).isEqualTo(1);
+        assertThat(repository.findAll().get(0).getStatus().name()).isEqualTo("PENDING");
     }
 
     private String create(UUID accountId, String amount) throws Exception {

@@ -9,7 +9,9 @@ public class TransactionException extends RuntimeException {
         CURRENCY_MISMATCH,
         INSUFFICIENT_BALANCE,
         ACCOUNT_SERVICE_UNAVAILABLE,
-        TRANSACTION_NOT_FOUND
+        TRANSACTION_NOT_FOUND,
+        IDEMPOTENCY_CONFLICT,
+        OPERATION_CONFLICT
     }
 
     private final Code code;

@@ -28,12 +28,12 @@ class TransactionPersistenceTest {
         try (var accountServer = new AccountStub()) {
             try (var context = startContext(accountServer.url())) {
                 var service = context.getBean(TransactionService.class);
-                assertThatThrownBy(() -> service.create(request(accountId, "151")))
+                assertThatThrownBy(() -> service.create("persist-key", request(accountId, "151")))
                         .isInstanceOfSatisfying(TransactionException.class,
                                 exception -> assertThat(exception.getCode())
                                         .isEqualTo(TransactionException.Code.MAX_AMOUNT_EXCEEDED));
                 assertThat(accountServer.requests()).isEmpty();
-                transactionId = service.create(request(accountId, "149.123456789")).id();
+                transactionId = service.create("persist-key", request(accountId, "149.123456789")).id();
             }
 
             assertThat(directory.resolve("transactions.mv.db")).exists();
@@ -50,7 +50,7 @@ class TransactionPersistenceTest {
                 assertThat(service.list(accountId, 0, 10).totalElements()).isEqualTo(1);
             }
             assertThat(accountServer.requests()).containsExactly(
-                    new AccountStub.Request("GET", "/api/accounts/" + accountId));
+                    new AccountStub.Request("POST", "/internal/debits"));
         }
     }
 
@@ -63,6 +63,6 @@ class TransactionPersistenceTest {
                 .web(WebApplicationType.NONE)
                 .run("--spring.datasource.url=jdbc:h2:file:" + directory.resolve("transactions") + ";DB_CLOSE_ON_EXIT=FALSE",
                         "--bank.account-service.url=" + accountUrl,
-                        "--bank.transaction.max-amount=150", "--spring.main.banner-mode=off");
+                        "--bank.transaction.max-amount=150", "--bank.transaction.recovery.enabled=false", "--spring.main.banner-mode=off");
     }
 }

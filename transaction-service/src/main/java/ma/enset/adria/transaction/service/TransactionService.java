@@ -2,104 +2,85 @@ package ma.enset.adria.transaction.service;
 
 import feign.FeignException;
 import jakarta.validation.Valid;
-import jakarta.validation.constraints.Max;
-import jakarta.validation.constraints.Min;
-import jakarta.validation.constraints.NotNull;
-import ma.enset.adria.transaction.domain.Transaction;
-import ma.enset.adria.transaction.repository.TransactionRepository;
+import jakarta.validation.constraints.*;
+import ma.enset.adria.transaction.domain.TransactionStatus;
 import ma.enset.adria.transaction.service.client.AccountClient;
-import ma.enset.adria.transaction.service.dto.AccountSnapshot;
-import ma.enset.adria.transaction.service.dto.CreateTransactionRequest;
-import ma.enset.adria.transaction.service.dto.TransactionPageResponse;
-import ma.enset.adria.transaction.service.dto.TransactionResponse;
+import ma.enset.adria.transaction.service.dto.*;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Sort;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 import org.springframework.validation.annotation.Validated;
-
+import tools.jackson.databind.json.JsonMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import java.math.BigDecimal;
-import java.time.Instant;
-import java.time.temporal.ChronoUnit;
+import java.util.Set;
 import java.util.UUID;
-
-import static ma.enset.adria.transaction.service.TransactionException.Code.*;
 
 @Service
 @Validated
-@Transactional(readOnly = true)
 public class TransactionService {
-
-    private final TransactionRepository repository;
-    private final AccountClient accountClient;
+    private static final Logger log = LoggerFactory.getLogger(TransactionService.class);
+    private static final Set<String> REFUSALS = Set.of("ACCOUNT_NOT_FOUND", "ACCOUNT_BLOCKED",
+            "CURRENCY_MISMATCH", "INSUFFICIENT_BALANCE", "OPERATION_CONFLICT");
+    private final TransactionStore store;
+    private final AccountClient client;
     private final BigDecimal maxAmount;
+    private final JsonMapper json;
 
-    public TransactionService(TransactionRepository repository, AccountClient accountClient,
+    public TransactionService(TransactionStore store, AccountClient client, JsonMapper json,
                               @Value("${bank.transaction.max-amount}") BigDecimal maxAmount) {
-        this.repository = repository;
-        this.accountClient = accountClient;
-        if (maxAmount.signum() <= 0) {
-            throw new IllegalArgumentException("bank.transaction.max-amount doit être strictement positif.");
-        }
-        this.maxAmount = maxAmount;
+        this.store = store; this.client = client; this.json = json; this.maxAmount = maxAmount;
+        if (maxAmount.signum() <= 0) throw new IllegalArgumentException("Le plafond doit être positif.");
     }
 
-    @Transactional
-    public TransactionResponse create(@NotNull @Valid CreateTransactionRequest request) {
-        if (request.amount().compareTo(maxAmount) > 0) {
-            throw new TransactionException(MAX_AMOUNT_EXCEEDED, "Le montant dépasse le plafond de " + maxAmount + ".");
-        }
-        AccountSnapshot account = consultAccount(request.accountId());
-        if ("BLOCKED".equals(account.status())) {
-            throw new TransactionException(ACCOUNT_BLOCKED, "Le compte est bloqué.");
-        }
-        if (!request.currency().equals(account.currency())) {
-            throw new TransactionException(CURRENCY_MISMATCH, "La devise doit correspondre à celle du compte.");
-        }
-        if (request.amount().compareTo(account.balance()) > 0) {
-            throw new TransactionException(INSUFFICIENT_BALANCE, "Le solde du compte est insuffisant.");
-        }
-
-        // Étape intermédiaire : consultation seule, aucun débit du compte n'est effectué.
-        Transaction transaction = new Transaction(request.accountId(), request.amount(), request.currency(),
-                request.merchantCategory(), request.country(), Instant.now().truncatedTo(ChronoUnit.MICROS));
-        return toResponse(repository.save(transaction));
+    // L'orchestrateur ne porte pas @Transactional : le commit PENDING précède l'appel Feign.
+    public TransactionResponse create(@NotBlank @Size(max = 128) String key,
+                                      @NotNull @Valid CreateTransactionRequest request) {
+        TransactionResponse transaction;
+        try { transaction = store.reserve(key, request, maxAmount); }
+        catch (DataIntegrityViolationException collision) { transaction = store.replay(key, request); }
+        return attempt(transaction);
     }
 
-    public TransactionResponse get(@NotNull UUID id) {
-        return toResponse(repository.findById(id).orElseThrow(() ->
-                new TransactionException(TRANSACTION_NOT_FOUND, "Transaction introuvable : " + id)));
-    }
-
-    public TransactionPageResponse list(@NotNull UUID accountId, @Min(0) int page, @Min(1) @Max(100) int size) {
-        var transactions = repository.findByAccountId(accountId,
-                PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt").and(Sort.by("id"))));
-        return new TransactionPageResponse(transactions.map(this::toResponse).getContent(),
-                transactions.getNumber(), transactions.getSize(), transactions.getTotalElements(), transactions.getTotalPages());
-    }
-
-    private AccountSnapshot consultAccount(UUID id) {
-        AccountSnapshot account;
+    private TransactionResponse attempt(TransactionResponse t) {
+        if (t.status() != TransactionStatus.PENDING) return t;
+        DebitResponse result;
         try {
-            account = accountClient.getAccount(id);
-        } catch (FeignException.NotFound exception) {
-            throw new TransactionException(ACCOUNT_NOT_FOUND, "Compte introuvable : " + id, exception);
+            result = client.debit(new DebitRequest(t.id(), t.accountId(), t.amount(), t.currency()));
         } catch (FeignException exception) {
-            throw new TransactionException(ACCOUNT_SERVICE_UNAVAILABLE,
-                    "Impossible de consulter account-service.", exception);
+            String refusal = confirmedRefusal(exception, t.id());
+            if (refusal != null) return store.finish(t.id(), TransactionStatus.REJECTED, refusal);
+            return store.get(t.id()); // Timeout/5xx/réponse ambiguë : le débit peut déjà être committé.
         }
-        if (account == null || !id.equals(account.id())
-                || !("ACTIVE".equals(account.status()) || "BLOCKED".equals(account.status()))
-                || account.currency() == null || !account.currency().matches("[A-Z]{3}")
-                || account.balance() == null || account.balance().signum() < 0) {
-            throw new TransactionException(ACCOUNT_SERVICE_UNAVAILABLE, "Réponse de account-service invalide.");
-        }
-        return account;
+        if (result == null || !t.id().equals(result.operationId()) || !t.accountId().equals(result.accountId())
+                || result.amount() == null || t.amount().compareTo(result.amount()) != 0
+                || !t.currency().equals(result.currency()) || !"COMPLETED".equals(result.status())
+                || result.balanceAfter() == null || result.balanceAfter().signum() < 0
+                || result.rejectionCode() != null) return store.get(t.id());
+        return store.finish(t.id(), TransactionStatus.COMPLETED, null);
     }
 
-    private TransactionResponse toResponse(Transaction transaction) {
-        return new TransactionResponse(transaction.getId(), transaction.getAccountId(), transaction.getAmount(),
-                transaction.getCurrency(), transaction.getMerchantCategory(), transaction.getCountry(), transaction.getCreatedAt());
+    private String confirmedRefusal(FeignException exception, UUID operationId) {
+        if (exception.status() != 400 && exception.status() != 404 && exception.status() != 409) return null;
+        try {
+            var body = json.readTree(exception.contentUTF8());
+            String code = body.path("code").asText();
+            if (operationId.toString().equals(body.path("operationId").asText()) && REFUSALS.contains(code))
+                return code;
+        } catch (RuntimeException ignored) { /* Réponse non reconnue : conserver PENDING. */ }
+        return null;
+    }
+
+    public void retryPending() {
+        for (UUID id : store.pending()) {
+            try { attempt(store.get(id)); }
+            catch (RuntimeException exception) { log.warn("Reprise différée de la transaction {}", id, exception); }
+        }
+    }
+
+    public TransactionResponse get(@NotNull UUID id) { return store.get(id); }
+    public TransactionPageResponse list(@NotNull UUID accountId, @Min(0) int page, @Min(1) @Max(100) int size) {
+        return store.list(accountId, page, size);
     }
 }

@@ -48,4 +48,22 @@ class AccountPersistenceTest {
                 .run("--spring.datasource.url=jdbc:h2:file:" + directory.resolve("accounts") + ";DB_CLOSE_ON_EXIT=FALSE",
                         "--spring.jpa.hibernate.ddl-auto=update", "--spring.main.banner-mode=off");
     }
+
+    @Test
+    void debitIdempotencySurvivesRestart() {
+        UUID accountId;
+        UUID operationId = UUID.randomUUID();
+        try (var context = startContext()) {
+            accountId = context.getBean(AccountService.class).create(new CreateAccountRequest(
+                    "PERSIST-DEBIT", "MAD", new BigDecimal("1500"))).id();
+            context.getBean(ma.enset.adria.account.service.DebitService.class).debit(
+                    new ma.enset.adria.account.service.dto.DebitRequest(operationId, accountId, new BigDecimal("250"), "MAD"));
+        }
+        try (var context = startContext()) {
+            var replay = context.getBean(ma.enset.adria.account.service.DebitService.class).debit(
+                    new ma.enset.adria.account.service.dto.DebitRequest(operationId, accountId, new BigDecimal("250.00"), "MAD"));
+            assertThat(replay.balanceAfter()).isEqualByComparingTo("1250");
+            assertThat(context.getBean(AccountService.class).get(accountId).balance()).isEqualByComparingTo("1250");
+        }
+    }
 }

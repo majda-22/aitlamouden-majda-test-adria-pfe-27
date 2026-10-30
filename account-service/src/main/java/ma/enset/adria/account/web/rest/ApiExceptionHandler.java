@@ -16,6 +16,19 @@ import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExcep
 @RestControllerAdvice
 public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
 
+    @ExceptionHandler(ma.enset.adria.account.service.DebitException.class)
+    public ProblemDetail handleDebit(ma.enset.adria.account.service.DebitException exception) {
+        var status = switch (exception.getCode()) {
+            case "OPERATION_CONFLICT" -> HttpStatus.CONFLICT;
+            case "ACCOUNT_NOT_FOUND" -> HttpStatus.NOT_FOUND;
+            default -> HttpStatus.BAD_REQUEST;
+        };
+        var problem = ProblemDetail.forStatusAndDetail(status, exception.getMessage());
+        problem.setProperty("code", exception.getCode());
+        problem.setProperty("operationId", exception.getOperationId());
+        return problem;
+    }
+
     @ExceptionHandler(AccountNotFoundException.class)
     public ProblemDetail handleAccountNotFound(AccountNotFoundException exception) {
         return ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, exception.getMessage());

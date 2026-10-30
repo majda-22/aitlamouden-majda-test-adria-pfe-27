@@ -66,4 +66,8 @@ public class Account {
     public void changeStatus(AccountStatus status) {
         this.status = status;
     }
+
+    public void debit(BigDecimal amount) {
+        balance = balance.subtract(amount);
+    }
 }
