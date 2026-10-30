@@ -1,0 +1,37 @@
+"""Chaîne JSON décimale exacte, point séparateur, sans exposant : "1500.00". Jamais un nombre Float."""
+scalar Decimal
+
+enum AccountStatus { ACTIVE BLOCKED }
+
+type Account {
+  """UUID représenté par un ID sous forme de chaîne."""
+  id: ID!
+  customerReference: String!
+  status: AccountStatus!
+  currency: String!
+  balance: Decimal!
+}
+
+type AccountPage {
+  content: [Account!]!
+  page: Int!
+  size: Int!
+  totalElements: Int!
+  totalPages: Int!
+}
+
+input CreateAccountInput {
+  customerReference: String!
+  currency: String!
+  balance: Decimal!
+}
+
+type Query {
+  account(id: ID!): Account
+  accounts(page: Int! = 0, size: Int! = 20): AccountPage
+}
+
+type Mutation {
+  createAccount(input: CreateAccountInput!): Account
+  updateAccountStatus(id: ID!, status: AccountStatus!): Account
+}

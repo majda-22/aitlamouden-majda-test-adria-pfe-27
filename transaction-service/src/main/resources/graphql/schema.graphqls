@@ -1,0 +1,64 @@
+"""Chaîne JSON décimale exacte, point séparateur, sans exposant : "250.00". Jamais un nombre Float."""
+scalar Decimal
+
+enum TransactionStatus { LEGACY_UNDEBITED PENDING COMPLETED REJECTED }
+
+type Transaction {
+  """UUID représenté par un ID sous forme de chaîne."""
+  id: ID!
+  accountId: ID!
+  amount: Decimal!
+  currency: String!
+  merchantCategory: String!
+  country: String!
+  """Instant généré côté serveur, chaîne ISO-8601 UTC, exemple : 2026-10-30T10:00:00Z."""
+  createdAt: String!
+  status: TransactionStatus!
+  rejectionCode: String
+}
+
+type Transfer {
+  id: ID!
+  sourceAccountId: ID!
+  destinationAccountId: ID!
+  amount: Decimal!
+  currency: String!
+  """Instant généré côté serveur, chaîne ISO-8601 UTC."""
+  createdAt: String!
+  status: TransactionStatus!
+  rejectionCode: String
+}
+
+type TransactionPage {
+  content: [Transaction!]!
+  page: Int!
+  size: Int!
+  totalElements: Int!
+  totalPages: Int!
+}
+
+input CreateTransactionInput {
+  accountId: ID!
+  amount: Decimal!
+  currency: String!
+  merchantCategory: String!
+  country: String!
+}
+
+input CreateTransferInput {
+  sourceAccountId: ID!
+  destinationAccountId: ID!
+  amount: Decimal!
+  currency: String!
+}
+
+type Query {
+  transaction(id: ID!): Transaction
+  transactions(accountId: ID!, page: Int! = 0, size: Int! = 10): TransactionPage
+  transfer(id: ID!): Transfer
+}
+
+type Mutation {
+  createTransaction(input: CreateTransactionInput!, idempotencyKey: String!): Transaction
+  createTransfer(input: CreateTransferInput!, idempotencyKey: String!): Transfer
+}
