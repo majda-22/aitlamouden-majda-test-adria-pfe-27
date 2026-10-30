@@ -19,7 +19,7 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
     @ExceptionHandler(TransactionException.class)
     public ProblemDetail handleTransactionException(TransactionException exception) {
         HttpStatus status = switch (exception.getCode()) {
-            case ACCOUNT_NOT_FOUND, TRANSACTION_NOT_FOUND -> HttpStatus.NOT_FOUND;
+            case ACCOUNT_NOT_FOUND, TRANSACTION_NOT_FOUND, TRANSFER_NOT_FOUND -> HttpStatus.NOT_FOUND;
             case ACCOUNT_SERVICE_UNAVAILABLE -> HttpStatus.SERVICE_UNAVAILABLE;
             case IDEMPOTENCY_CONFLICT, OPERATION_CONFLICT -> HttpStatus.CONFLICT;
             default -> HttpStatus.BAD_REQUEST;

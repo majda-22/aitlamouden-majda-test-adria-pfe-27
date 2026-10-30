@@ -11,4 +11,8 @@ public interface AccountClient {
 
     @PostMapping("/internal/debits")
     DebitResponse debit(@RequestBody DebitRequest request);
+
+    @PostMapping("/internal/transfers")
+    ma.enset.adria.transaction.service.dto.TransferResult transfer(
+            @RequestBody ma.enset.adria.transaction.service.dto.TransferRequest request);
 }

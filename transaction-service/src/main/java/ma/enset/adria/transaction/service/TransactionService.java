@@ -22,7 +22,7 @@ import java.util.UUID;
 public class TransactionService {
     private static final Logger log = LoggerFactory.getLogger(TransactionService.class);
     private static final Set<String> REFUSALS = Set.of("ACCOUNT_NOT_FOUND", "ACCOUNT_BLOCKED",
-            "CURRENCY_MISMATCH", "INSUFFICIENT_BALANCE", "OPERATION_CONFLICT");
+            "CURRENCY_MISMATCH", "INSUFFICIENT_BALANCE", "OPERATION_CONFLICT", "SAME_ACCOUNT");
     private final TransactionStore store;
     private final AccountClient client;
     private final BigDecimal maxAmount;
@@ -45,6 +45,7 @@ public class TransactionService {
 
     private TransactionResponse attempt(TransactionResponse t) {
         if (t.status() != TransactionStatus.PENDING) return t;
+        if (t.destinationAccountId() != null) return attemptTransfer(t);
         DebitResponse result;
         try {
             result = client.debit(new DebitRequest(t.id(), t.accountId(), t.amount(), t.currency()));
@@ -58,6 +59,45 @@ public class TransactionService {
                 || !t.currency().equals(result.currency()) || !"COMPLETED".equals(result.status())
                 || result.balanceAfter() == null || result.balanceAfter().signum() < 0
                 || result.rejectionCode() != null) return store.get(t.id());
+        return store.finish(t.id(), TransactionStatus.COMPLETED, null);
+    }
+
+    public TransferResponse createTransfer(@NotBlank @Size(max = 128) String key,
+                                            @NotNull @Valid CreateTransferRequest request) {
+        TransactionResponse transaction;
+        try { transaction = store.reserveTransfer(key, request, maxAmount); }
+        catch (DataIntegrityViolationException collision) { transaction = store.replayTransfer(key, request); }
+        return transferResponse(attempt(transaction));
+    }
+
+    public TransferResponse getTransfer(@NotNull UUID id) {
+        var transaction = store.get(id);
+        if (transaction.destinationAccountId() == null)
+            throw new TransactionException(TransactionException.Code.TRANSFER_NOT_FOUND, "Virement introuvable : " + id);
+        return transferResponse(transaction);
+    }
+
+    private TransferResponse transferResponse(TransactionResponse t) {
+        return new TransferResponse(t.id(), t.accountId(), t.destinationAccountId(), t.amount(), t.currency(),
+                t.createdAt(), t.status(), t.rejectionCode());
+    }
+
+    private TransactionResponse attemptTransfer(TransactionResponse t) {
+        TransferResult result;
+        try {
+            result = client.transfer(new TransferRequest(t.id(), t.accountId(), t.destinationAccountId(), t.amount(), t.currency()));
+        } catch (FeignException exception) {
+            String refusal = confirmedRefusal(exception, t.id());
+            if (refusal != null) return store.finish(t.id(), TransactionStatus.REJECTED, refusal);
+            return store.get(t.id());
+        }
+        if (result == null || !t.id().equals(result.operationId()) || !t.accountId().equals(result.sourceAccountId())
+                || !t.destinationAccountId().equals(result.destinationAccountId()) || result.amount() == null
+                || t.amount().compareTo(result.amount()) != 0 || !t.currency().equals(result.currency())
+                || !"COMPLETED".equals(result.status()) || result.rejectionCode() != null
+                || result.sourceBalanceAfter() == null || result.sourceBalanceAfter().signum() < 0
+                || result.destinationBalanceAfter() == null || result.destinationBalanceAfter().signum() < 0)
+            return store.get(t.id());
         return store.finish(t.id(), TransactionStatus.COMPLETED, null);
     }
 
@@ -79,7 +119,12 @@ public class TransactionService {
         }
     }
 
-    public TransactionResponse get(@NotNull UUID id) { return store.get(id); }
+    public TransactionResponse get(@NotNull UUID id) {
+        var transaction = store.get(id);
+        if (transaction.destinationAccountId() != null)
+            throw new TransactionException(TransactionException.Code.TRANSACTION_NOT_FOUND, "Transaction simple introuvable : " + id);
+        return transaction;
+    }
     public TransactionPageResponse list(@NotNull UUID accountId, @Min(0) int page, @Min(1) @Max(100) int size) {
         return store.list(accountId, page, size);
     }

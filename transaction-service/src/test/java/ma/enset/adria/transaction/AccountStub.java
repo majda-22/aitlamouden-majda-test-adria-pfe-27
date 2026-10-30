@@ -20,18 +20,19 @@ final class AccountStub implements AutoCloseable {
     private final JsonMapper json = JsonMapper.builder().build();
     private volatile Reply reply;
     private BigDecimal balance;
+    private BigDecimal destinationBalance;
 
     AccountStub() {
         try { server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0); }
         catch (IOException e) { throw new IllegalStateException(e); }
         reset();
         server.setExecutor(executor);
-        server.createContext("/internal/debits", exchange -> {
+        server.createContext("/internal/", exchange -> {
             Reply current = reply;
             requests.add(new Request(exchange.getRequestMethod(), exchange.getRequestURI().getPath()));
             try {
                 String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
-                Outcome result = outcome(body, current);
+                Outcome result = outcome(body, exchange.getRequestURI().getPath(), current);
                 // Débit committé avant l'attente : reproduit une réponse perdue après succès.
                 if (current.delay() > 0) Thread.sleep(current.delay());
                 byte[] bytes = result.body().getBytes(StandardCharsets.UTF_8);
@@ -45,14 +46,16 @@ final class AccountStub implements AutoCloseable {
         server.start();
     }
 
-    private synchronized Outcome outcome(String body, Reply current) {
+    private synchronized Outcome outcome(String body, String path, Reply current) {
         var data = json.readTree(body);
         String op = data.path("operationId").asText();
         if (current.raw() != null) return new Outcome(200, current.raw());
         if (current.httpStatus() >= 500) return new Outcome(current.httpStatus(), "{}");
         if (operations.containsKey(op)) return operations.get(op);
         BigDecimal amount = new BigDecimal(data.path("amount").asText());
-        String refusal = current.httpStatus() == 404 ? "ACCOUNT_NOT_FOUND" :
+        boolean transfer = path.equals("/internal/transfers");
+        String refusal = transfer && data.path("sourceAccountId").asText().equals(data.path("destinationAccountId").asText()) ? "SAME_ACCOUNT" :
+                current.httpStatus() == 404 ? "ACCOUNT_NOT_FOUND" :
                 !"ACTIVE".equals(current.status()) ? "ACCOUNT_BLOCKED" :
                 !current.currency().equals(data.path("currency").asText()) ? "CURRENCY_MISMATCH" :
                 balance.compareTo(amount) < 0 ? "INSUFFICIENT_BALANCE" : null;
@@ -61,7 +64,15 @@ final class AccountStub implements AutoCloseable {
                 "{\"operationId\":\"" + op + "\",\"code\":\"" + refusal + "\"}");
         else {
             balance = balance.subtract(amount);
-            result = new Outcome(200, "{\"operationId\":\"" + op + "\",\"accountId\":\""
+            if (transfer) {
+                destinationBalance = destinationBalance.add(amount);
+                result = new Outcome(200, "{\"operationId\":\"" + op + "\",\"sourceAccountId\":\""
+                        + data.path("sourceAccountId").asText() + "\",\"destinationAccountId\":\""
+                        + data.path("destinationAccountId").asText() + "\",\"amount\":" + amount
+                        + ",\"currency\":\"" + data.path("currency").asText()
+                        + "\",\"status\":\"COMPLETED\",\"sourceBalanceAfter\":" + balance
+                        + ",\"destinationBalanceAfter\":" + destinationBalance + ",\"rejectionCode\":null}");
+            } else result = new Outcome(200, "{\"operationId\":\"" + op + "\",\"accountId\":\""
                     + data.path("accountId").asText() + "\",\"amount\":" + amount + ",\"currency\":\""
                     + data.path("currency").asText() + "\",\"status\":\"COMPLETED\",\"balanceAfter\":"
                     + balance + ",\"rejectionCode\":null}");
@@ -73,7 +84,7 @@ final class AccountStub implements AutoCloseable {
     String url() { return "http://127.0.0.1:" + server.getAddress().getPort(); }
     synchronized void reset() {
         reply = new Reply(200, "ACTIVE", "MAD", 0, null);
-        balance = new BigDecimal("2000"); operations.clear(); requests.clear();
+        balance = new BigDecimal("2000"); destinationBalance = new BigDecimal("200"); operations.clear(); requests.clear();
     }
     synchronized void respond(int httpStatus, String status, String currency, String balance) {
         this.balance = new BigDecimal(balance); reply = new Reply(httpStatus, status, currency, 0, null);
@@ -83,6 +94,7 @@ final class AccountStub implements AutoCloseable {
     void rawResponse(String body) { reply = new Reply(200, "ACTIVE", "MAD", 0, body); }
     List<Request> requests() { return List.copyOf(requests); }
     synchronized BigDecimal balance() { return balance; }
+    synchronized BigDecimal destinationBalance() { return destinationBalance; }
     synchronized int operationCount() { return operations.size(); }
     @Override public void close() { server.stop(0); executor.shutdownNow(); }
 }

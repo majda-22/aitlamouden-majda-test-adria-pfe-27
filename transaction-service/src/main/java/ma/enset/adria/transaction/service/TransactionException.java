@@ -11,7 +11,9 @@ public class TransactionException extends RuntimeException {
         ACCOUNT_SERVICE_UNAVAILABLE,
         TRANSACTION_NOT_FOUND,
         IDEMPOTENCY_CONFLICT,
-        OPERATION_CONFLICT
+        OPERATION_CONFLICT,
+        SAME_ACCOUNT,
+        TRANSFER_NOT_FOUND
     }
 
     private final Code code;

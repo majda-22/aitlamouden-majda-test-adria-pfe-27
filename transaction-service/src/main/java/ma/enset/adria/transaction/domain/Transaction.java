@@ -24,6 +24,10 @@ public class Transaction {
     @Column(nullable = false, updatable = false)
     private UUID accountId;
 
+    // Null pour un débit simple ; les anciennes lignes restent inchangées.
+    @Column(updatable = false)
+    private UUID destinationAccountId;
+
     @Column(nullable = false, updatable = false, precision = 38, scale = 18)
     private BigDecimal amount;
 
@@ -73,6 +77,13 @@ public class Transaction {
     public Instant getCreatedAt() { return createdAt; }
     public TransactionStatus getStatus() { return status; }
     public String getRejectionCode() { return rejectionCode; }
+    public UUID getDestinationAccountId() { return destinationAccountId; }
+
+    public Transaction(UUID accountId, UUID destinationAccountId, BigDecimal amount, String currency,
+                       String merchantCategory, String country, Instant createdAt, String key) {
+        this(accountId, amount, currency, merchantCategory, country, createdAt, key);
+        this.destinationAccountId = destinationAccountId;
+    }
 
     public void finish(TransactionStatus status, String rejectionCode) {
         if (this.status == TransactionStatus.PENDING) {

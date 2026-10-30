@@ -58,11 +58,40 @@ class TransactionPersistenceTest {
         return new CreateTransactionRequest(accountId, new BigDecimal(amount), "MAD", "SHOP", "MA");
     }
 
+    @Test
+    void pendingTransferRetainsBothAccountsAndRecoversAfterRestartWithoutSecondMovement() {
+        var request = new ma.enset.adria.transaction.service.dto.CreateTransferRequest(
+                UUID.randomUUID(), UUID.randomUUID(), new BigDecimal("100"), "MAD");
+        UUID id;
+        try (var accountServer = new AccountStub()) {
+            accountServer.delay(1200);
+            try (var context = startContext(accountServer.url())) {
+                var pending = context.getBean(TransactionService.class).createTransfer("persist-transfer", request);
+                assertThat(pending.status().name()).isEqualTo("PENDING");
+                id = pending.id();
+            }
+            accountServer.available();
+            try (var context = startContext(accountServer.url())) {
+                var service = context.getBean(TransactionService.class);
+                var restored = service.getTransfer(id);
+                assertThat(restored.sourceAccountId()).isEqualTo(request.sourceAccountId());
+                assertThat(restored.destinationAccountId()).isEqualTo(request.destinationAccountId());
+                service.retryPending();
+                assertThat(service.getTransfer(id).status().name()).isEqualTo("COMPLETED");
+                assertThat(service.createTransfer("persist-transfer", request).id()).isEqualTo(id);
+            }
+            assertThat(accountServer.balance()).isEqualByComparingTo("1900");
+            assertThat(accountServer.destinationBalance()).isEqualByComparingTo("300");
+            assertThat(accountServer.operationCount()).isEqualTo(1);
+        }
+    }
+
     private ConfigurableApplicationContext startContext(String accountUrl) {
         return new SpringApplicationBuilder(TransactionServiceApplication.class)
                 .web(WebApplicationType.NONE)
                 .run("--spring.datasource.url=jdbc:h2:file:" + directory.resolve("transactions") + ";DB_CLOSE_ON_EXIT=FALSE",
                         "--bank.account-service.url=" + accountUrl,
-                        "--bank.transaction.max-amount=150", "--bank.transaction.recovery.enabled=false", "--spring.main.banner-mode=off");
+                        "--bank.transaction.max-amount=150", "--bank.transaction.recovery.enabled=false",
+                        "--spring.cloud.openfeign.client.config.account-service.readTimeout=200", "--spring.main.banner-mode=off");
     }
 }

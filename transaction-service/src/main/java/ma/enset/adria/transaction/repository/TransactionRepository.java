@@ -15,7 +15,7 @@ import org.springframework.data.repository.query.Param;
 
 public interface TransactionRepository extends JpaRepository<Transaction, UUID> {
 
-    Page<Transaction> findByAccountId(UUID accountId, Pageable pageable);
+    Page<Transaction> findByAccountIdAndDestinationAccountIdIsNull(UUID accountId, Pageable pageable);
     Optional<Transaction> findByIdempotencyKey(String key);
     Page<Transaction> findByStatus(TransactionStatus status, Pageable pageable);
 
