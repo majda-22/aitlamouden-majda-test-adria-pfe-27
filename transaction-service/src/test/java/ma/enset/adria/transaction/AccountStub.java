@@ -32,6 +32,7 @@ final class AccountStub implements AutoCloseable {
             requests.add(new Request(exchange.getRequestMethod(), exchange.getRequestURI().getPath()));
             try {
                 String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+                if ("__DROP_CONNECTION__".equals(current.raw())) return;
                 Outcome result = outcome(body, exchange.getRequestURI().getPath(), current);
                 // Débit committé avant l'attente : reproduit une réponse perdue après succès.
                 if (current.delay() > 0) Thread.sleep(current.delay());
@@ -92,6 +93,7 @@ final class AccountStub implements AutoCloseable {
     void delay(long millis) { reply = new Reply(200, "ACTIVE", "MAD", millis, null); }
     void available() { reply = new Reply(200, "ACTIVE", "MAD", 0, null); }
     void rawResponse(String body) { reply = new Reply(200, "ACTIVE", "MAD", 0, body); }
+    void dropConnection() { reply = new Reply(200, "ACTIVE", "MAD", 0, "__DROP_CONNECTION__"); }
     List<Request> requests() { return List.copyOf(requests); }
     synchronized BigDecimal balance() { return balance; }
     synchronized BigDecimal destinationBalance() { return destinationBalance; }

@@ -32,7 +32,10 @@ class TransferApiTest {
     @Autowired MockMvc mvc;
     UUID source;
     UUID destination;
+    @Autowired io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry circuits;
+
     @BeforeEach void reset() {
+        circuits.getAllCircuitBreakers().forEach(io.github.resilience4j.circuitbreaker.CircuitBreaker::reset);
         repository.deleteAll(); SERVER.reset(); SERVER.respond(200, "ACTIVE", "MAD", "1500");
         source = UUID.randomUUID(); destination = UUID.randomUUID();
     }

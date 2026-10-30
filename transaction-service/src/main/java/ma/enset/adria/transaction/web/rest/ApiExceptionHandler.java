@@ -16,6 +16,13 @@ import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExcep
 @RestControllerAdvice
 public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
 
+    @ExceptionHandler(org.springframework.cloud.client.circuitbreaker.NoFallbackAvailableException.class)
+    public ProblemDetail handleRemoteUnavailability(RuntimeException exception) {
+        var problem = ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE, "account-service indisponible.");
+        problem.setProperty("code", "ACCOUNT_SERVICE_UNAVAILABLE");
+        return problem;
+    }
+
     @ExceptionHandler(TransactionException.class)
     public ProblemDetail handleTransactionException(TransactionException exception) {
         HttpStatus status = switch (exception.getCode()) {

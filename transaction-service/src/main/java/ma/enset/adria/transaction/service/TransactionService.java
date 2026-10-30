@@ -1,6 +1,7 @@
 package ma.enset.adria.transaction.service;
 
 import feign.FeignException;
+import org.springframework.cloud.client.circuitbreaker.NoFallbackAvailableException;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.*;
 import ma.enset.adria.transaction.domain.TransactionStatus;
@@ -49,7 +50,7 @@ public class TransactionService {
         DebitResponse result;
         try {
             result = client.debit(new DebitRequest(t.id(), t.accountId(), t.amount(), t.currency()));
-        } catch (FeignException exception) {
+        } catch (FeignException | NoFallbackAvailableException exception) {
             String refusal = confirmedRefusal(exception, t.id());
             if (refusal != null) return store.finish(t.id(), TransactionStatus.REJECTED, refusal);
             return store.get(t.id()); // Timeout/5xx/réponse ambiguë : le débit peut déjà être committé.
@@ -86,7 +87,7 @@ public class TransactionService {
         TransferResult result;
         try {
             result = client.transfer(new TransferRequest(t.id(), t.accountId(), t.destinationAccountId(), t.amount(), t.currency()));
-        } catch (FeignException exception) {
+        } catch (FeignException | NoFallbackAvailableException exception) {
             String refusal = confirmedRefusal(exception, t.id());
             if (refusal != null) return store.finish(t.id(), TransactionStatus.REJECTED, refusal);
             return store.get(t.id());
@@ -101,7 +102,13 @@ public class TransactionService {
         return store.finish(t.id(), TransactionStatus.COMPLETED, null);
     }
 
-    private String confirmedRefusal(FeignException exception, UUID operationId) {
+    private String confirmedRefusal(RuntimeException failure, UUID operationId) {
+        // Spring Cloud peut ajouter NoFallbackAvailableException puis ExecutionException.
+        FeignException exception = null;
+        for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
+            if (cause instanceof FeignException feign) { exception = feign; break; }
+        }
+        if (exception == null) return null;
         if (exception.status() != 400 && exception.status() != 404 && exception.status() != 409) return null;
         try {
             var body = json.readTree(exception.contentUTF8());

@@ -60,8 +60,11 @@ class TransactionApiTest {
     @Autowired
     private TransactionService service;
 
+    @Autowired io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry circuits;
+
     @BeforeEach
     void reset() {
+        circuits.getAllCircuitBreakers().forEach(io.github.resilience4j.circuitbreaker.CircuitBreaker::reset);
         repository.deleteAll();
         ACCOUNT_SERVER.reset();
     }

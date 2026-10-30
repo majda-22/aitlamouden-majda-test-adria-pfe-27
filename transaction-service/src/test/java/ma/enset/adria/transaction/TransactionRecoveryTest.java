@@ -32,7 +32,10 @@ class TransactionRecoveryTest {
     @Autowired TransactionService service;
     @Autowired TransactionRepository repository;
     @Autowired MockMvc mvc;
-    @BeforeEach void reset() { repository.deleteAll(); SERVER.reset(); SERVER.respond(200, "ACTIVE", "MAD", "1500"); }
+    @Autowired io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry circuits;
+
+    @BeforeEach void reset() {
+        circuits.getAllCircuitBreakers().forEach(io.github.resilience4j.circuitbreaker.CircuitBreaker::reset); repository.deleteAll(); SERVER.reset(); SERVER.respond(200, "ACTIVE", "MAD", "1500"); }
 
     @TestConfiguration
     static class HttpBoundaryCheck {
